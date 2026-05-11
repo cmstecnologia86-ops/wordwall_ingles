@@ -5,16 +5,36 @@ export const runtime = "nodejs";
 
 type ActivityType = "match" | "quiz" | "flashcards" | "order";
 
-const fallbackActivity = {
-  title: "Daily routines",
-  level: "8 years old / beginner",
+type ActivityItem = {
+  id: string;
+  prompt: string;
+  answer: string;
+  options?: string[];
+  imageHint?: string;
+};
+
+type Activity = {
+  title: string;
+  level: string;
+  activityType: ActivityType;
+  instructions: string;
+  items: ActivityItem[];
+};
+
+const fallbackActivity: Activity = {
+  title: "Daily routines match",
+  level: "Beginner / 8 years old",
   activityType: "match",
-  instructions: "Match each English phrase with the correct meaning.",
+  instructions: "Look at each word and learn it with the visual cards. Then play and choose the correct picture.",
   items: [
-    { id: "1", prompt: "wake up", answer: "despertar" },
-    { id: "2", prompt: "get dressed", answer: "vestirse" },
-    { id: "3", prompt: "catch the bus", answer: "tomar el bus" },
-    { id: "4", prompt: "do homework", answer: "hacer la tarea" }
+    { id: "1", prompt: "wake up", answer: "despertar", imageHint: "alarm clock and bed" },
+    { id: "2", prompt: "get up", answer: "levantarse", imageHint: "child getting out of bed" },
+    { id: "3", prompt: "wash", answer: "lavarse", imageHint: "washing face and hands" },
+    { id: "4", prompt: "have a shower", answer: "ducharse", imageHint: "child taking a shower" },
+    { id: "5", prompt: "get dressed", answer: "vestirse", imageHint: "putting on clothes" },
+    { id: "6", prompt: "catch the bus", answer: "tomar el bus", imageHint: "school bus" },
+    { id: "7", prompt: "do homework", answer: "hacer la tarea", imageHint: "books and homework" },
+    { id: "8", prompt: "go to bed", answer: "irse a la cama", imageHint: "moon and bed" }
   ]
 };
 
@@ -30,10 +50,10 @@ async function fileToText(file: File | null) {
   }
 
   return [
-    `Archivo subido: ${fileName}`,
-    `Tipo MIME: ${fileType || "no detectado"}`,
-    `Tamaño aproximado: ${sizeKb} KB`,
-    "Nota: en este MVP inicial se registra el archivo y se usa el texto manual si fue ingresado. La extracción profunda de PDF/DOCX/audio/video se agregará en la siguiente iteración."
+    `Uploaded file: ${fileName}`,
+    `MIME type: ${fileType || "unknown"}`,
+    `Approx size: ${sizeKb} KB`,
+    "This MVP currently prioritizes the manual text and will add deeper extraction for PDF, DOCX, audio and video in later iterations."
   ].join("\n");
 }
 
@@ -47,12 +67,26 @@ function safeParseJson(text: string) {
   return JSON.parse(cleaned);
 }
 
+function normalizeActivity(activity: Activity, requestedType: ActivityType): Activity {
+  return {
+    ...activity,
+    activityType: requestedType,
+    items: activity.items.map((item, index) => ({
+      id: item.id || String(index + 1),
+      prompt: item.prompt,
+      answer: item.answer,
+      options: item.options ?? [],
+      imageHint: item.imageHint ?? item.prompt
+    }))
+  };
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
 
   const activityType = String(formData.get("activityType") || "match") as ActivityType;
   const manualText = String(formData.get("manualText") || "");
-  const file = formData.get("file") instanceof File ? formData.get("file") as File : null;
+  const file = formData.get("file") instanceof File ? (formData.get("file") as File) : null;
   const fileText = await fileToText(file);
 
   const sourceContent = [manualText, fileText].filter(Boolean).join("\n\n").trim();
@@ -66,33 +100,38 @@ export async function POST(request: Request) {
     });
   }
 
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  });
+  try {
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
 
-  const prompt = `
-Eres un generador de actividades educativas de inglés para un niño de 8 años.
+    const prompt = `
+You are a generator of educational English activities for an 8-year-old child.
 
-Objetivo:
-Crear una actividad tipo Wordwall simple, visual y útil para practicar inglés.
+Goal:
+Create a child-friendly vocabulary activity inspired by Wordwall.
+The final content will be used in:
+1) a learning view with images,
+2) a game view where the child chooses the correct picture.
 
-Tipo de actividad solicitada:
+Requested activity type:
 ${activityType}
 
-Material entregado:
-${sourceContent || "No se entregó texto. Genera una actividad inicial de rutinas diarias en inglés."}
+Source material:
+${sourceContent || "No text was provided. Generate an initial daily routines activity in English."}
 
-Reglas:
-- Nivel: niño de 8 años, inglés inicial.
-- Usar vocabulario simple.
-- No inventar contenido avanzado.
-- Si el material tiene vocabulario, priorizar ese vocabulario.
-- Generar entre 4 y 8 ítems.
-- Las respuestas deben estar en español simple.
-- El resultado debe ser SOLO JSON válido.
-- No uses Markdown.
+Rules:
+- Beginner English only.
+- Child is 8 years old.
+- Prioritize concrete, visual vocabulary.
+- Use the vocabulary found in the source if available.
+- Generate between 5 and 10 items.
+- The Spanish answer must be simple and child-friendly.
+- Add a short imageHint for each item so the UI can show a visual clue.
+- Return ONLY valid JSON.
+- Do not use Markdown.
 
-Formato obligatorio:
+Required JSON format:
 {
   "title": "string",
   "level": "string",
@@ -103,19 +142,32 @@ Formato obligatorio:
       "id": "1",
       "prompt": "English word or phrase",
       "answer": "Spanish answer",
+      "imageHint": "short visual clue",
       "options": ["optional", "optional", "optional"]
     }
   ]
 }
 `;
 
-  const response = await client.responses.create({
-    model: "gpt-5.5",
-    input: prompt
-  });
+    const response = await client.responses.create({
+      model: "gpt-5.5",
+      input: prompt
+    });
 
-  const outputText = response.output_text;
-  const activity = safeParseJson(outputText);
+    const outputText = response.output_text;
+    const activity = safeParseJson(outputText);
 
-  return NextResponse.json({ activity });
+    return NextResponse.json({
+      activity: normalizeActivity(activity, activityType)
+    });
+  } catch (error) {
+    console.error("generate-activity error", error);
+
+    return NextResponse.json({
+      activity: {
+        ...fallbackActivity,
+        activityType
+      }
+    });
+  }
 }
