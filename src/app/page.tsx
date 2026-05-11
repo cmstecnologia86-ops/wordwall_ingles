@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { makeVisualDataUri } from "@/lib/activityVisuals";
 
 type ActivityItem = {
@@ -9,6 +9,7 @@ type ActivityItem = {
   answer: string;
   options?: string[];
   imageHint?: string;
+  imageUrl?: string | null;
 };
 
 type Activity = {
@@ -32,14 +33,14 @@ const demoActivity: Activity = {
   activityType: "match",
   instructions: "Learn the vocabulary with images first. Then play and choose the correct picture.",
   items: [
-    { id: "1", prompt: "wake up", answer: "despertar", imageHint: "alarm clock and bed" },
+    { id: "1", prompt: "wake up", answer: "despertar", imageHint: "child waking up in bed with alarm clock" },
     { id: "2", prompt: "get up", answer: "levantarse", imageHint: "child getting out of bed" },
-    { id: "3", prompt: "wash", answer: "lavarse", imageHint: "washing face and hands" },
+    { id: "3", prompt: "wash", answer: "lavarse", imageHint: "child washing face and hands" },
     { id: "4", prompt: "have a shower", answer: "ducharse", imageHint: "child taking a shower" },
-    { id: "5", prompt: "get dressed", answer: "vestirse", imageHint: "putting on clothes" },
-    { id: "6", prompt: "catch the bus", answer: "tomar el bus", imageHint: "school bus" },
-    { id: "7", prompt: "do homework", answer: "hacer la tarea", imageHint: "books and homework" },
-    { id: "8", prompt: "go to bed", answer: "irse a la cama", imageHint: "moon and bed" }
+    { id: "5", prompt: "get dressed", answer: "vestirse", imageHint: "child putting on clothes" },
+    { id: "6", prompt: "catch the bus", answer: "tomar el bus", imageHint: "child catching the school bus" },
+    { id: "7", prompt: "do homework", answer: "hacer la tarea", imageHint: "child doing homework at a desk" },
+    { id: "8", prompt: "go to bed", answer: "irse a la cama", imageHint: "child going to bed at night" }
   ]
 };
 
@@ -62,7 +63,8 @@ function normalizeActivity(activity: Activity): Activity {
       prompt: item.prompt,
       answer: item.answer,
       options: item.options ?? [],
-      imageHint: item.imageHint ?? item.prompt
+      imageHint: item.imageHint ?? item.prompt,
+      imageUrl: item.imageUrl ?? null
     }))
   };
 }
@@ -94,6 +96,27 @@ function speakEnglish(text: string) {
   window.speechSynthesis.speak(utterance);
 }
 
+async function requestAiImage(item: ActivityItem) {
+  const response = await fetch("/api/generate-item-image", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: item.prompt,
+      answer: item.answer,
+      imageHint: item.imageHint
+    })
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = await response.json();
+  return data.imageUrl ?? null;
+}
+
 export default function Home() {
   const [manualText, setManualText] = useState("");
   const [activityType, setActivityType] = useState<Activity["activityType"]>("match");
@@ -108,11 +131,66 @@ export default function Home() {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [gameScore, setGameScore] = useState(0);
   const [gameFinished, setGameFinished] = useState(false);
+  const [generatingImages, setGeneratingImages] = useState(false);
+
+  const imageJobRef = useRef(0);
 
   const currentLearnItem = activity.items[learnIndex] ?? activity.items[0];
   const currentQuestion = gameQuestions[gameIndex];
   const selectedOption = currentQuestion?.options.find((option) => option.id === selectedOptionId) ?? null;
   const isCorrectAnswer = selectedOption && currentQuestion ? selectedOption.id === currentQuestion.item.id : null;
+
+  function patchImageUrl(itemId: string, imageUrl: string) {
+    setActivity((current) => ({
+      ...current,
+      items: current.items.map((item) =>
+        item.id === itemId ? { ...item, imageUrl } : item
+      )
+    }));
+
+    setGameQuestions((current) =>
+      current.map((question) => ({
+        ...question,
+        item: question.item.id === itemId ? { ...question.item, imageUrl } : question.item,
+        options: question.options.map((option) =>
+          option.id === itemId ? { ...option, imageUrl } : option
+        )
+      }))
+    );
+  }
+
+  async function hydrateImages(items: ActivityItem[]) {
+    const jobId = ++imageJobRef.current;
+    setGeneratingImages(true);
+
+    for (const item of items) {
+      if (jobId !== imageJobRef.current) {
+        return;
+      }
+
+      if (item.imageUrl) {
+        continue;
+      }
+
+      try {
+        const imageUrl = await requestAiImage(item);
+
+        if (jobId !== imageJobRef.current) {
+          return;
+        }
+
+        if (imageUrl) {
+          patchImageUrl(item.id, imageUrl);
+        }
+      } catch {
+        // keep fallback visual
+      }
+    }
+
+    if (jobId === imageJobRef.current) {
+      setGeneratingImages(false);
+    }
+  }
 
   function resetInteractiveViews(nextActivity: Activity, randomize = true) {
     const normalized = normalizeActivity(nextActivity);
@@ -125,7 +203,13 @@ export default function Home() {
     setSelectedOptionId(null);
     setGameScore(0);
     setGameFinished(false);
+
+    void hydrateImages(normalized.items);
   }
+
+  useEffect(() => {
+    void hydrateImages(demoActivity.items);
+  }, []);
 
   async function generateActivity() {
     setLoading(true);
@@ -194,14 +278,15 @@ export default function Home() {
   const gameProgress = gameQuestions.length > 0
     ? Math.round((((gameFinished ? gameQuestions.length : gameIndex + 1)) / gameQuestions.length) * 100)
     : 0;
+  const aiReadyCount = activity.items.filter((item) => !!item.imageUrl).length;
 
   return (
     <main className="page-shell">
       <section className="panel hero-panel">
         <div className="hero-header">
           <div>
-            <p className="eyebrow">WORDWALL INGLÉS • MVP VISUAL</p>
-            <h1>Aprender con imágenes y jugar la actividad</h1>
+            <p className="eyebrow">WORDWALL INGLÉS • IA VISUAL</p>
+            <h1>Aprender con ilustraciones generadas y jugar la actividad</h1>
             <p className="hero-text">
               Sube material, genera vocabulario con IA y conviértelo en una actividad visual:
               primero <strong>Aprender</strong>, después <strong>Jugar</strong>.
@@ -263,7 +348,21 @@ export default function Home() {
           </div>
 
           <div className="tips-card">
-            <h3>Flujo sugerido</h3>
+            <h3>Estado de ilustraciones IA</h3>
+            <p className="helper-text">
+              Ilustraciones listas: <strong>{aiReadyCount} / {activity.items.length}</strong>
+            </p>
+
+            {generatingImages ? (
+              <div className="note-box">
+                Generando ilustraciones con IA y guardándolas para reutilizarlas después.
+              </div>
+            ) : (
+              <div className="note-box">
+                Si la ilustración ya fue creada antes, el sistema la reutiliza desde el almacenamiento.
+              </div>
+            )}
+
             <ol>
               <li>Subir o pegar el vocabulario.</li>
               <li>Entrar a <strong>Aprender vocabulario</strong>.</li>
@@ -272,11 +371,6 @@ export default function Home() {
               <li>Entrar a <strong>Jugar con imágenes</strong>.</li>
               <li>Elegir la imagen correcta.</li>
             </ol>
-
-            <div className="note-box">
-              Este checkpoint ya deja la plataforma mucho más cercana a Wordwall para un niño:
-              <strong> aprender + jugar </strong>.
-            </div>
           </div>
         </div>
       </section>
@@ -292,6 +386,7 @@ export default function Home() {
           <div className="workspace-side">
             <span className="pill">Nivel: {activity.level}</span>
             <span className="pill">Palabras: {activity.items.length}</span>
+            <span className="pill">IA listas: {aiReadyCount}</span>
           </div>
         </div>
 
@@ -325,7 +420,7 @@ export default function Home() {
             <div className="learn-card">
               <div className="visual-card">
                 <img
-                  src={makeVisualDataUri(currentLearnItem.imageHint || currentLearnItem.prompt, currentLearnItem.prompt)}
+                  src={currentLearnItem.imageUrl || makeVisualDataUri(currentLearnItem.imageHint || currentLearnItem.prompt, currentLearnItem.prompt)}
                   alt={currentLearnItem.prompt}
                   className="visual-image"
                   draggable={false}
@@ -339,6 +434,10 @@ export default function Home() {
                 <p className="helper-text">
                   Primero observa la imagen, luego escucha la palabra y relaciónala con su significado.
                 </p>
+
+                {!currentLearnItem.imageUrl && (
+                  <p className="pending-text">Usando visual provisional mientras se genera la ilustración IA.</p>
+                )}
 
                 <div className="learn-actions">
                   <button
@@ -424,7 +523,7 @@ export default function Home() {
                         disabled={!!selectedOptionId}
                       >
                         <img
-                          src={makeVisualDataUri(option.imageHint || option.prompt, option.prompt)}
+                          src={option.imageUrl || makeVisualDataUri(option.imageHint || option.prompt, option.prompt)}
                           alt={option.prompt}
                           className="option-image"
                           draggable={false}
@@ -503,7 +602,7 @@ export default function Home() {
             {activity.items.map((item) => (
               <div key={item.id} className="gallery-card">
                 <img
-                  src={makeVisualDataUri(item.imageHint || item.prompt, item.prompt)}
+                  src={item.imageUrl || makeVisualDataUri(item.imageHint || item.prompt, item.prompt)}
                   alt={item.prompt}
                   className="gallery-image"
                   draggable={false}
@@ -511,6 +610,7 @@ export default function Home() {
                 <div className="gallery-copy">
                   <strong>{item.prompt}</strong>
                   <span>{item.answer}</span>
+                  {!item.imageUrl && <small>ilustración IA pendiente</small>}
                 </div>
               </div>
             ))}
@@ -749,6 +849,13 @@ export default function Home() {
           color: #fecaca;
         }
 
+        .pending-text {
+          margin: 0;
+          color: #fde68a;
+          font-size: 0.92rem;
+          font-weight: 600;
+        }
+
         .mode-switch {
           margin-top: 20px;
           display: inline-flex;
@@ -820,6 +927,8 @@ export default function Home() {
           width: 100%;
           height: auto;
           border-radius: 18px;
+          aspect-ratio: 1 / 1;
+          object-fit: cover;
         }
 
         .learn-copy {
@@ -930,6 +1039,11 @@ export default function Home() {
         .gallery-copy span {
           color: #cbd5e1;
           font-size: 0.94rem;
+        }
+
+        .gallery-copy small {
+          color: #fde68a;
+          font-size: 0.8rem;
         }
 
         @media (max-width: 960px) {
